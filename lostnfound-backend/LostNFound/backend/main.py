@@ -13,9 +13,18 @@ from pydantic import BaseModel
 import re
 from fastapi.staticfiles import StaticFiles
 from datetime import datetime
+
+class UserRecoveryInput(BaseModel):
+    category: str
+    color: str
+    location_type: str = Field(..., description="Location or 'Unknown'")
+    lost_time: str = Field(..., description="Approximate time (HH:MM) in 24h format")
+    days_since_loss: int = Field(..., ge=0, description="Days passed since item was lost")
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from recovery_engine import engine, RecoveryEngine
+from pydantic import BaseModel, Field
 
 
 from dotenv import load_dotenv
@@ -307,12 +316,19 @@ Rules:
 - Ask ONE short question.
 - Extract 1-2 tags.
 - Estimate confidenceDelta (1-10).
+- Extract "category", "color", "location_type" (Landmark/Building/Transit/Pathway/Open Area), and "lost_time" (HH:MM).
 
 Respond ONLY in JSON:
 {
   "text": "...",
   "tags": ["..."],
-  "confidenceDelta": 5
+  "confidenceDelta": 5,
+  "features": {
+    "category": "...",
+    "color": "...",
+    "location_type": "...",
+    "lost_time": "..."
+  }
 }
 """
 
@@ -360,6 +376,27 @@ Respond ONLY in JSON:
 
         try:
             parsed = json.loads(cleaned)
+            
+            # Use recovery engine to get a real probability estimate if features are present
+            features = parsed.get("features", {})
+            if all(k in features for k in ["category", "color", "location_type", "lost_time"]):
+                try:
+                    # Guess days_since_loss as 0 for now as it's a new report
+                    prob = engine.predict(
+                        category=features["category"],
+                        color=features["color"],
+                        location_type=features["location_type"],
+                        lost_time=features["lost_time"],
+                        days_since_loss=0
+                    )
+                    if prob is not None:
+                        parsed["recoveryProbability"] = prob
+                        print(f"DEBUG: Predicted recovery probability: {prob}%")
+                except Exception as e:
+                    print(f"Prediction fallback error: {e}")
+            
+            print(f"DEBUG: Detective response: {parsed}")
+            
             return parsed
         except json.JSONDecodeError as e:
             return {
@@ -400,9 +437,17 @@ Include:
 - Shape (if mentioned)
 - Distinctive features (if mentioned)
 
-Do NOT ask questions.
-Do NOT invent details.
-Return only the description paragraph.
+Respond ONLY in JSON:
+{
+  "final_description": "...",
+  "features": {
+    "category": "...",
+    "color": "...",
+    "location_type": "...",
+    "lost_time": "...",
+    "days_since_loss": 0
+  }
+}
 """
 
         # ===== Convert Entire Conversation To ONE User Message =====
@@ -425,7 +470,7 @@ Return only the description paragraph.
         ]
 
         print("Messages Sent To OpenRouter:")
-        print(messages)
+        # print(messages)
 
         # ===== API CALL =====
         response = requests.post(
@@ -457,20 +502,60 @@ Return only the description paragraph.
             return {"final_description": "AI temporarily unavailable."}
 
         final_text = result["choices"][0]["message"]["content"]
+        
+        # Remove markdown wrapper
+        cleaned_final = re.sub(r"```json|```", "", final_text).strip()
 
-        if final_text:
-            final_text = final_text.strip()
-
-        if not final_text:
-            print("Model returned empty content.")
-            final_text = "Description could not be generated. Please try again."
-
-        print("Final Description Generated:", final_text)
-
-        return {"final_description": final_text}
+        try:
+            parsed_final = json.loads(cleaned_final)
+            f_desc = parsed_final.get("final_description", "")
+            features = parsed_final.get("features", {})
+            
+            prob = None
+            if features:
+                prob = engine.predict(
+                    category=features.get("category", "Unknown"),
+                    color=features.get("color", "Unknown"),
+                    location_type=features.get("location_type", "Unknown"),
+                    lost_time=features.get("lost_time", "12:00"),
+                    days_since_loss=features.get("days_since_loss", 0)
+                )
+            
+            print(f"DEBUG: Finalize features: {features}")
+            print(f"DEBUG: Finalize probability: {prob}%")
+            
+            return {
+                "final_description": f_desc,
+                "recovery_probability": prob
+            }
+        except:
+            # Fallback if AI doesn't return JSON
+            return {"final_description": final_text.strip()}
 
     except Exception as e:
         print("Finalize Endpoint Error:", str(e))
         return {"final_description": "Something went wrong."}
+
+@app.post("/api/predict_recovery")
+def predict_recovery(data: UserRecoveryInput):
+    try:
+        probability = engine.predict(
+            category=data.category,
+            color=data.color,
+            location_type=data.location_type,
+            lost_time=data.lost_time,
+            days_since_loss=data.days_since_loss
+        )
+        
+        if probability is None:
+            return {"success": False, "message": "Model not loaded"}
+
+        return {
+            "success": True,
+            "recovery_probability_percent": probability
+        }
+    except Exception as e:
+        print(f"Prediction error: {e}")
+        return {"success": False, "message": str(e)}
 
 

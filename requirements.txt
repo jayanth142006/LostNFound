@@ -10,3 +10,7 @@ huggingface_hub
 python-dotenv
 python-multipart
 numpy
+joblib
+pandas
+scikit-learn
+xgboost

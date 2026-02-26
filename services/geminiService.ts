@@ -1,7 +1,7 @@
 export const generateDetectiveResponse = async (
   history: { role: string; content: string }[],
   userInput: string
-): Promise<{ text: string; tags: string[]; confidenceDelta: number }> => {
+): Promise<{ text: string; tags: string[]; confidenceDelta: number; recoveryProbability?: number }> => {
 
   const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
   try {
@@ -25,7 +25,8 @@ export const generateDetectiveResponse = async (
     return {
       text: parsed.text || "Could you describe it further?",
       tags: parsed.tags || [],
-      confidenceDelta: parsed.confidenceDelta || 2
+      confidenceDelta: parsed.confidenceDelta || 2,
+      recoveryProbability: parsed.recoveryProbability
     };
 
   } catch (error) {

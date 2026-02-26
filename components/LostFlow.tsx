@@ -43,6 +43,12 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
 
       const data = await res.json();
       setFinalDescription(data.final_description);
+      if (data.recovery_probability !== undefined && data.recovery_probability !== null) {
+        setProfile(prev => ({
+          ...prev,
+          confidence: data.recovery_probability
+        }));
+      }
     } catch (error) {
       console.error("Finalize Error:", error);
     }
@@ -101,7 +107,7 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
     // Update Profile visuals
     setProfile((prev) => ({
       ...prev,
-      confidence: Math.min(100, prev.confidence + response.confidenceDelta),
+      confidence: response.recoveryProbability !== undefined ? response.recoveryProbability : Math.min(100, prev.confidence + response.confidenceDelta),
       tags: [...new Set([...prev.tags, ...response.tags])],
     }));
   };
@@ -177,8 +183,8 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
             >
               <div
                 className={`max-w-[80%] p-4 paper-shadow-sm border border-[#2d2d2d] relative ${msg.sender === "user"
-                    ? "bg-[#e07a5f] text-white rotate-1 rounded-tl-xl rounded-br-xl rounded-bl-xl"
-                    : "bg-white text-[#2d2d2d] -rotate-1 rounded-tr-xl rounded-br-xl rounded-bl-xl"
+                  ? "bg-[#e07a5f] text-white rotate-1 rounded-tl-xl rounded-br-xl rounded-bl-xl"
+                  : "bg-white text-[#2d2d2d] -rotate-1 rounded-tr-xl rounded-br-xl rounded-bl-xl"
                   }`}
               >
                 {msg.sender === "ai" && (
