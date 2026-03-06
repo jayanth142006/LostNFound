@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lost & Found Recovery AI</title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --input-bg: #f1f5f9;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            background: var(--card);
+            border-radius: 16px;
+            padding: 40px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            border: 1px solid var(--border);
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-main);
+            margin-bottom: 8px;
+            letter-spacing: -0.5px;
+            background: none;
+            -webkit-text-fill-color: initial;
+        }
+
+        .subtitle {
+            text-align: center;
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 32px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-main);
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        select,
+        input {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--input-bg);
+            color: var(--text-main);
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        select:focus,
+        input:focus {
+            border-color: var(--primary);
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            margin-top: 10px;
+            background: var(--primary);
+            color: white;
+            font-weight: 600;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: var(--primary-hover);
+            opacity: 1;
+        }
+
+        .result-card {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 12px;
+            background: #eff6ff;
+            border: 1px solid #dbeafe;
+            text-align: center;
+            display: none;
+        }
+
+        .result-percent {
+            font-size: 40px;
+            font-weight: 800;
+            color: var(--primary);
+            margin-bottom: 4px;
+            letter-spacing: -1px;
+        }
+
+        .result-msg {
+            font-size: 14px;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .debug-box {
+            margin-top: 15px;
+            font-size: 12px;
+            color: var(--text-muted);
+            text-align: left;
+            background: #fff;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+
+        <h1>Lost & Found AI</h1>
+        <p class="subtitle">AI-powered recovery intelligence engine</p>
+
+        <form id="predictionForm">
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Item Category</label>
+                    <input type="text" id="category" placeholder="e.g. ID Card, Wallet, Phone" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Color</label>
+                    <select id="color" required>
+                        <option value="" disabled selected>Select</option>
+                        <option value="Black">Black</option>
+                        <option value="White">White</option>
+                        <option value="Blue">Blue</option>
+                        <option value="Red">Red</option>
+                        <option value="Silver">Silver</option>
+                        <option value="Green">Green</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Location (type "Unknown" if not sure)</label>
+                <input type="text" id="location_type" placeholder="e.g. Main Canteen, or Unknown" required>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Approx. Time Lost</label>
+                    <input type="time" id="lost_time" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Days Since Lost</label>
+                    <input type="number" id="days_since_loss" min="0" value="0" required>
+                </div>
+            </div>
+
+            <button type="submit">Predict Recovery Chance</button>
+
+        </form>
+
+        <div class="result-card" id="resultCard">
+            <div class="result-percent" id="probabilityDisplay">--%</div>
+            <div class="result-msg" id="messageDisplay"></div>
+            <div
+                style="margin-top:15px; font-size:11px; color:#64748b; text-align:left; background:rgba(0,0,0,0.2); padding:10px; border-radius:8px;">
+                <strong>AI Analysis:</strong><br>
+                Time Context: <span id="debug-time">--</span><br>
+                Crowd Factor: <span id="debug-footfall">--</span><br>
+                Match Confidence: <span id="debug-match">--</span>
+            </div>
+        </div>
+
+
+    </div>
+
+    <script>
+        // Set default time to current time
+        const now = new Date();
+        const timeString = now.toTimeString().split(' ')[0].substring(0, 5);
+        document.getElementById('lost_time').value = timeString;
+
+        document.getElementById('predictionForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+
+            const formData = {
+                category: document.getElementById('category').value,
+                color: document.getElementById('color').value,
+                location_type: document.getElementById('location_type').value,
+                lost_time: document.getElementById('lost_time').value,
+                days_since_loss: parseInt(document.getElementById('days_since_loss').value)
+            };
+
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(formData)
+                });
+
+                const data = await response.json();
+
+                const percent = data.recovery_probability_percent;
+                const debug = data.debug_info;
+
+                document.getElementById('probabilityDisplay').textContent = percent + "%";
+
+                // Update Debug Info
+                document.getElementById('debug-footfall').textContent = debug.footfall_score.toFixed(1) + " / 10";
+                document.getElementById('debug-match').textContent = (debug.max_similarity_score * 100).toFixed(0) + "%";
+
+                let msg = "";
+                if (percent > 70) {
+                    msg = "High likelihood of recovery.";
+                } else if (percent > 40) {
+                    msg = "Moderate recovery chance.";
+                } else {
+                    msg = "Low recovery probability.";
+                }
+
+                document.getElementById('messageDisplay').textContent = msg;
+                document.getElementById('resultCard').style.display = 'block';
+
+            } catch (err) {
+                alert("Server error.");
+                console.error(err);
+            }
+        });
+    </script>
+
+</body>
+
+</html>

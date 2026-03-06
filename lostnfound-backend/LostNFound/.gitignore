@@ -1,6 +1,7 @@
 venv/
 .env
 lostfound.db
+lostfound_v2.db
 chroma_db/
 generated_images/
 uploaded_images/

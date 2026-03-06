@@ -19,7 +19,9 @@ export interface LostItemProfile {
     tags: string[];
     colorHex: string;
     lastSeen: string;
-    generatedImage?: string; 
+    generatedImage?: string;
+    time?: string;
+    days_since_loss?: number;
 }
 
 export interface FoundItem {

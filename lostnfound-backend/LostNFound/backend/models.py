@@ -12,6 +12,11 @@ class LostItem(Base):
     description = Column(String)
     image_path = Column(String)
     email = Column(String)
+    category = Column(String, default="Unknown")
+    color = Column(String, default="Unknown")
+    location = Column(String, default="Unknown")
+    time = Column(String, default="12:00")
+    days_since_loss = Column(Integer, default=0)
     created_at = Column(String)
     matched = Column(Integer, default=0) # 0 = false, 1 = true
 
@@ -49,8 +54,13 @@ class Verification(Base):
     qr_code_path = Column(String, nullable=True)
 
 class DetectiveRequest(BaseModel):
-    history: list
-    userInput: str
+    history: list = []
+    userInput: str = ""
+    category: str = "Unknown"
+    color: str = "Unknown"
+    location: str = "Unknown"
+    time: str = "12:00"
+    days_since_loss: int = 0
 
 
 class FinalizeRequest(BaseModel):

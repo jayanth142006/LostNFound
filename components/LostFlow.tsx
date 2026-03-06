@@ -43,6 +43,9 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
 
       const data = await res.json();
       setFinalDescription(data.final_description);
+      if (data.recovery_probability !== undefined) {
+        setProfile((prev) => ({ ...prev, confidence: data.recovery_probability }));
+      }
     } catch (error) {
       console.error("Finalize Error:", error);
     }
@@ -56,6 +59,8 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
     tags: [],
     colorHex: "#cccccc",
     lastSeen: "Unknown",
+    time: "12:00",
+    days_since_loss: 0
   });
 
   const scrollToBottom = () => {
@@ -85,7 +90,14 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
       role: m.sender === "ai" ? "assistant" : "user",
       content: m.text,
     }));
-    const response = await generateDetectiveResponse(history, userMsg.text);
+
+    const response = await generateDetectiveResponse(history, userMsg.text, {
+      category: profile.category,
+      color: profile.colorHex, // simplified mapping
+      location: profile.lastSeen,
+      time: profile.time || "12:00",
+      days_since_loss: profile.days_since_loss || 0
+    });
 
     setIsThinking(false);
 
@@ -99,11 +111,25 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
     setMessages((prev) => [...prev, aiMsg]);
 
     // Update Profile visuals
-    setProfile((prev) => ({
-      ...prev,
-      confidence: Math.min(100, prev.confidence + response.confidenceDelta),
-      tags: [...new Set([...prev.tags, ...response.tags])],
-    }));
+    setProfile((prev) => {
+      const newConfidence = response.recovery_probability;
+      const newCategory = response.current_category && response.current_category !== "Unknown" ? response.current_category : prev.category;
+      const newLocation = response.current_location && response.current_location !== "Unknown" ? response.current_location : prev.lastSeen;
+      const newTime = response.current_time && response.current_time !== "Unknown" ? response.current_time : prev.time;
+      const newDays = response.current_days !== undefined && response.current_days !== null ? response.current_days : prev.days_since_loss;
+      const newColor = response.current_color && response.current_color !== "Unknown" ? response.current_color : prev.colorHex;
+
+      return {
+        ...prev,
+        confidence: newConfidence,
+        tags: [...new Set([...prev.tags, ...response.tags])],
+        category: newCategory,
+        lastSeen: newLocation,
+        time: newTime,
+        days_since_loss: newDays,
+        colorHex: newColor
+      };
+    });
   };
   const handleSubmitLost = async () => {
     if (!finalDescription || !email) {
@@ -116,6 +142,11 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
       const formData = new FormData();
       formData.append("description", finalDescription);
       formData.append("email", email);
+      formData.append("category", profile.category);
+      formData.append("color", profile.colorHex);
+      formData.append("location", profile.lastSeen);
+      formData.append("time", profile.time || "12:00");
+      formData.append("days_since_loss", (profile.days_since_loss || 0).toString());
 
       const res = await fetch(`${baseUrl}/lost/`, {
         method: "POST",
@@ -128,7 +159,7 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
         setProfile((prev) => ({
           ...prev,
           generatedImage: data.image_url,
-          confidence: 100,
+          // Removed hardcoded confidence: 100 to keep the model's prediction
         }));
 
         if (data.match_found) {
@@ -177,8 +208,8 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
             >
               <div
                 className={`max-w-[80%] p-4 paper-shadow-sm border border-[#2d2d2d] relative ${msg.sender === "user"
-                    ? "bg-[#e07a5f] text-white rotate-1 rounded-tl-xl rounded-br-xl rounded-bl-xl"
-                    : "bg-white text-[#2d2d2d] -rotate-1 rounded-tr-xl rounded-br-xl rounded-bl-xl"
+                  ? "bg-[#e07a5f] text-white rotate-1 rounded-tl-xl rounded-br-xl rounded-bl-xl"
+                  : "bg-white text-[#2d2d2d] -rotate-1 rounded-tr-xl rounded-br-xl rounded-bl-xl"
                   }`}
               >
                 {msg.sender === "ai" && (

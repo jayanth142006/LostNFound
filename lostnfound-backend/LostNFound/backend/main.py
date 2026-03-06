@@ -1,5 +1,7 @@
 import os
 import time
+import joblib
+import pandas as pd
 from urllib import response
 
 from overrides import final
@@ -35,6 +37,23 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 model = genai.GenerativeModel("gemini-2.5-flash")
 
+# Load Recovery Model
+# main.py is in LNF/lostnfound-backend/LostNFound/backend/
+# We need to go up 4 levels to reach LNF root
+base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+MODEL_DIR = os.path.join(base_dir, "rec_prob")
+MODEL_PATH = os.path.join(MODEL_DIR, "recovery_model_v3.pkl")
+COLUMNS_PATH = os.path.join(MODEL_DIR, "model_columns.pkl")
+
+try:
+    recovery_model = joblib.load(MODEL_PATH)
+    recovery_columns = joblib.load(COLUMNS_PATH)
+    print("✅ Recovery model and columns loaded successfully.")
+except Exception as e:
+    print(f"⚠️ Error loading recovery model: {e}")
+    recovery_model = None
+    recovery_columns = []
+
 
 load_dotenv()
 Base.metadata.create_all(bind=engine)
@@ -50,6 +69,7 @@ app.add_middleware(
 )
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE_DIR = os.path.join(BASE_DIR, "generated_images")
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
 app.mount("/generated_images", StaticFiles(directory=IMAGE_DIR), name="generated_images")
 
@@ -73,9 +93,63 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 def get_root_path():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def calculate_recovery_probability(category: str, color: str, location: str, time_str: str, days_since_loss: int):
+    if not recovery_model or not recovery_columns:
+        return 10.0 # Fallback
+
+    try:
+        # Footfall Logic from rec_prob/app.py
+        def get_footfall_score(loc: str, t_str: str) -> float:
+            loc = loc.lower()
+            if not loc or "unknown" in loc: return 0.2
+            base_score = 0.45
+            if any(k in loc for k in ["clock", "tower", "landmark", "statue", "monument", "entrance", "gate"]): base_score = 0.90
+            elif any(k in loc for k in ["canteen", "library", "audi", "class", "lab", "block", "dept", "office", "room", "hall", "building"]): base_score = 0.85
+            elif any(k in loc for k in ["bus", "stop", "station", "subway", "transit", "vehicle", "parking"]): base_score = 0.75
+            elif any(k in loc for k in ["path", "way", "road", "walk", "corridor", "stairs", "lobby"]): base_score = 0.60
+            
+            try:
+                hour = int(t_str.split(":")[0])
+                if (8 <= hour <= 9) or (12 <= hour <= 14) or (15 <= hour <= 16): base_score *= 1.1
+                elif (hour >= 20) or (hour < 6): base_score *= 0.6
+            except: pass
+            return min(1.0, float(base_score))
+
+        footfall = get_footfall_score(location, time_str)
+        max_sim = 0.75 if any(k in category.lower() for k in ["id card", "wallet", "phone", "umbrella", "bottle"]) else 0.4
+        similar_nearby = int(footfall * max_sim * 0.5)
+
+        enriched = {
+            "category": category,
+            "color": color,
+            "reported_location": location,
+            "footfall_score": footfall,
+            "days_since_loss": days_since_loss,
+            "max_similarity_score": max_sim,
+            "similar_items_nearby_48h": similar_nearby
+        }
+
+        input_df = pd.DataFrame([enriched])
+        input_df = pd.get_dummies(input_df)
+        input_df = input_df.reindex(columns=recovery_columns, fill_value=0)
+        
+        prob = float(recovery_model.predict_proba(input_df)[0][1])
+        return round(prob * 100, 2)
+    except Exception as e:
+        print(f"Error predicting recovery: {e}")
+        return 10.0
+
 
 @app.post("/lost/")
-def add_lost(description: str = Form(...), email: str = Form(...)):
+def add_lost(
+    description: str = Form(...), 
+    email: str = Form(...),
+    category: str = Form("Unknown"),
+    color: str = Form("Unknown"),
+    location: str = Form("Unknown"),
+    time: str = Form("12:00"),
+    days_since_loss: int = Form(0)
+):
     db = SessionLocal()
 
     image_path = generate_lost_item_image(description)
@@ -87,6 +161,11 @@ def add_lost(description: str = Form(...), email: str = Form(...)):
         description=description, 
         image_path=image_path, 
         email=email,
+        category=category,
+        color=color,
+        location=location,
+        time=time,
+        days_since_loss=days_since_loss,
         created_at=datetime.now().isoformat()
     )
     db.add(lost)
@@ -542,33 +621,47 @@ def detective(data: DetectiveRequest):
     user_input = data.userInput or ""
 
     system_prompt = """
-You are Sherlock, helping describe lost items.
+You are Sherlock, a keen-eyed detective helping a user find a lost item.
 
-Ask ONE short question to clarify the item.
+Your goal is to build a "Digital Twin" (visual description) AND calculate recovery probability.
+
+INVESTIGATION GUIDELINES:
+1.  **Item & Color**: Establish what we are looking for and its color.
+2.  **Digital Twin Details**: Focus heavily on visual traits: material (leather, metal), texture (cracked, glossy), brand names, or unique scratches. This is CRITICAL for the sketch.
+3.  **Discovery Details**: Where exactly was it last seen? What time of day? How many days have passed?
+
+INVESTIGATION STRATEGY:
+- Review the `Current Knowns`.
+- If a detail is already known (not "Unknown"), DO NOT ask about it again.
+- Prioritize visual descriptive details (materials/marks) to help the Digital Twin.
+- Ask ONE short, immersive detective-style question at a time.
+- Be supportive but professional.
 
 Return JSON only:
 {
-"text":"question",
-"tags":["tag1","tag2"],
-"confidenceDelta":5
+  "text": "Your detective question here",
+  "tags": ["extracted_tag1", "extracted_tag2"],
+  "current_category": "extracted_category (if mentioned now)",
+  "current_color": "extracted_color (if mentioned now)",
+  "current_location": "extracted_location (if mentioned now)",
+  "current_time": "extracted_time (HH:MM if mentioned now)",
+  "current_days": extracted_number_if_mentioned_now
 }
-
-Rules:
-- text ≤15 words
-- tags = 1-2 keywords
-- no explanation
 """
 
-    conversation = "\n".join([h.get("content","") for h in history[-3:]])
+    conversation = "\n".join([h.get("content","") for h in history[-8:]])
 
     prompt = f"""
 {system_prompt}
 
-Conversation:
-{conversation}
+Current Knowns:
+Category: {data.category}
+Color: {data.color}
+Location: {data.location}
+Time: {data.time}
+Days: {data.days_since_loss}
 
-User:
-{user_input}
+Latest User Input: {user_input}
 """
 
     try:
@@ -576,22 +669,37 @@ User:
             prompt,
             generation_config={
                 "temperature": 0.4,
-                "max_output_tokens": 500,
+                "max_output_tokens": 1000,
                 "response_mime_type": "application/json"
             }
         )
 
         content = response.text.strip()
-        print("FULL RESPONSE OBJECT:", response)
-        print("TEXT:", response.text)
         cleaned = re.sub(r"```json|```", "", content).strip()
-
         json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
 
         if not json_match:
             raise HTTPException(status_code=500, detail="No JSON returned")
 
         parsed = json.loads(json_match.group())
+
+        # Calculate live probability
+        def clean_val(val, fallback):
+            if val is None or val == "" or str(val).lower() == "unknown":
+                return fallback
+            return val
+
+        category = clean_val(parsed.get("current_category"), data.category)
+        color = clean_val(parsed.get("current_color"), data.color)
+        location = clean_val(parsed.get("current_location"), data.location)
+        time_val = clean_val(parsed.get("current_time"), data.time)
+        days = clean_val(parsed.get("current_days"), data.days_since_loss)
+
+        print(f"DEBUG: Predicted with: Cat={category}, Col={color}, Loc={location}, Time={time_val}, Days={days}")
+
+        parsed["recovery_probability"] = calculate_recovery_probability(
+            category, color, location, str(time_val), int(days)
+        )
 
         return parsed
 
@@ -706,7 +814,19 @@ def finalize_description(data: FinalizeRequest):
         if not final_description:
             final_description = "Insufficient details provided to generate description."
 
-        return {"final_description": final_description}
+        # Final Probability Calculation
+        rec_prob = calculate_recovery_probability(
+            category or "Unknown",
+            color_found[0] if color_found else "Unknown",
+            location or "Unknown",
+            "12:00", # default time if not extracted
+            0 # default days if not extracted
+        )
+
+        return {
+            "final_description": final_description,
+            "recovery_probability": rec_prob
+        }
 
     except Exception as e:
         print("Finalize Endpoint Error:", str(e))
