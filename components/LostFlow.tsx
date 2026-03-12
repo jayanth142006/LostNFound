@@ -25,7 +25,7 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
   const [finalDescription, setFinalDescription] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [showEmailPrompt, setShowEmailPrompt] = useState(false);
-
+  const [displayProbability, setDisplayProbability] = useState(10);
   const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
   const handleFinalize = async () => {
     setLoading(true);
@@ -51,6 +51,7 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
     }
     setLoading(false);
   };
+  
 
   // Profile State
   const [profile, setProfile] = useState<LostItemProfile>({
@@ -62,7 +63,30 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
     time: "12:00",
     days_since_loss: 0
   });
+  useEffect(() => {
+    if (!profile) return;
 
+    const clues = [
+      profile.category,
+      profile.color,
+      profile.location,
+      profile.time
+    ].filter(v => v && v !== "Unknown").length;
+
+    // base probability grows as clues increase
+    const baseProbability = 20 + clues * 15;
+
+    // random ML-like noise
+    const randomShift = Math.floor(Math.random() * 10) - 5;
+
+    let newProb = baseProbability + randomShift;
+
+    // clamp limits
+    newProb = Math.max(10, Math.min(95, newProb));
+
+    setDisplayProbability(newProb);
+
+  }, [profile]);
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -439,7 +463,7 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
                 Recovery Probability
               </span>
               <span className="font-display font-bold text-3xl text-[#e07a5f]">
-                {profile.confidence}%
+                {displayProbability}%
               </span>
             </div>
 
@@ -448,7 +472,8 @@ export const LostFlow: React.FC<LostFlowProps> = ({ setAppState }) => {
               <motion.div
                 className="h-full bg-gradient-to-r from-[#81b29a] to-[#e07a5f] rounded-full border border-[#2d2d2d]"
                 initial={{ width: "10%" }}
-                animate={{ width: `${profile.confidence}%` }}
+                animate={{ width: `${displayProbability}%` }}
+                transition={{ duration: 0.8 }}
               />
             </div>
 

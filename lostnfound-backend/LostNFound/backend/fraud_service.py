@@ -39,7 +39,7 @@ Rules:
             prompt,
             generation_config={
                 "temperature": 0.4,
-                "max_output_tokens": 200
+                "max_output_tokens": 1000
             }
         )
 

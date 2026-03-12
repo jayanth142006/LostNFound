@@ -19,6 +19,7 @@ class LostItem(Base):
     days_since_loss = Column(Integer, default=0)
     created_at = Column(String)
     matched = Column(Integer, default=0) # 0 = false, 1 = true
+    
 
 
 class FoundItem(Base):

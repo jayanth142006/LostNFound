@@ -38,8 +38,8 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 # Load Recovery Model
-# main.py is in LNF/lostnfound-backend/LostNFound/backend/
-# We need to go up 4 levels to reach LNF root
+# Load Recovery Model
+# We need to go up 4 levels from backend to reach project root (lostnfound-backend/LostNFound/backend/ -> root)
 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 MODEL_DIR = os.path.join(base_dir, "rec_prob")
 MODEL_PATH = os.path.join(MODEL_DIR, "recovery_model_v3.pkl")
@@ -48,9 +48,9 @@ COLUMNS_PATH = os.path.join(MODEL_DIR, "model_columns.pkl")
 try:
     recovery_model = joblib.load(MODEL_PATH)
     recovery_columns = joblib.load(COLUMNS_PATH)
-    print("✅ Recovery model and columns loaded successfully.")
+    print(" Recovery model and columns loaded successfully.")
 except Exception as e:
-    print(f"⚠️ Error loading recovery model: {e}")
+    print(f" Error loading recovery model: {e}")
     recovery_model = None
     recovery_columns = []
 
@@ -122,7 +122,7 @@ def calculate_recovery_probability(category: str, color: str, location: str, tim
         enriched = {
             "category": category,
             "color": color,
-            "reported_location": location,
+            "location_type": location, # Changed from reported_location to location_type
             "footfall_score": footfall,
             "days_since_loss": days_since_loss,
             "max_similarity_score": max_sim,
@@ -157,6 +157,15 @@ def add_lost(
         db.close()
         return {"success": False, "message": "Image generation failed"}
 
+    # Calculate recovery probability
+    prob = calculate_recovery_probability(
+        category=category,
+        color=color,
+        location=location,
+        time_str=time,
+        days_since_loss=days_since_loss
+    )
+
     lost = LostItem(
         description=description, 
         image_path=image_path, 
@@ -166,7 +175,8 @@ def add_lost(
         location=location,
         time=time,
         days_since_loss=days_since_loss,
-        created_at=datetime.now().isoformat()
+        created_at=datetime.now().isoformat(),
+        
     )
     db.add(lost)
     db.commit()
@@ -623,7 +633,7 @@ def detective(data: DetectiveRequest):
     system_prompt = """
 You are Sherlock, a keen-eyed detective helping a user find a lost item.
 
-Your goal is to build a "Digital Twin" (visual description) AND calculate recovery probability.
+Your goal is to build a "Digital Twin" (visual description).
 
 INVESTIGATION GUIDELINES:
 1.  **Item & Color**: Establish what we are looking for and its color.
@@ -649,10 +659,13 @@ Return JSON only:
 }
 """
 
-    conversation = "\n".join([h.get("content","") for h in history[-8:]])
+    conversation = "\n".join([h.get("content", "") for h in history[-4:]])
 
     prompt = f"""
 {system_prompt}
+
+Conversation History:
+{conversation}
 
 Current Knowns:
 Category: {data.category}
@@ -665,6 +678,7 @@ Latest User Input: {user_input}
 """
 
     try:
+        time.sleep(1)
         response = model.generate_content(
             prompt,
             generation_config={
@@ -674,16 +688,20 @@ Latest User Input: {user_input}
             }
         )
 
+        # Safety check
+        if not response or not response.text:
+            raise HTTPException(status_code=500, detail="Gemini returned empty response")
+
         content = response.text.strip()
-        cleaned = re.sub(r"```json|```", "", content).strip()
-        json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
 
-        if not json_match:
-            raise HTTPException(status_code=500, detail="No JSON returned")
+        print("DEBUG GEMINI RAW:", content)
 
-        parsed = json.loads(json_match.group())
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=500, detail=f"Invalid JSON returned: {content}")
 
-        # Calculate live probability
+        # Utility function to clean values
         def clean_val(val, fallback):
             if val is None or val == "" or str(val).lower() == "unknown":
                 return fallback
@@ -695,10 +713,18 @@ Latest User Input: {user_input}
         time_val = clean_val(parsed.get("current_time"), data.time)
         days = clean_val(parsed.get("current_days"), data.days_since_loss)
 
-        print(f"DEBUG: Predicted with: Cat={category}, Col={color}, Loc={location}, Time={time_val}, Days={days}")
+        print(
+            f"DEBUG: Predicted with: "
+            f"Cat={category}, Col={color}, Loc={location}, Time={time_val}, Days={days}"
+        )
 
+        # Calculate recovery probability
         parsed["recovery_probability"] = calculate_recovery_probability(
-            category, color, location, str(time_val), int(days)
+            category,
+            color,
+            location,
+            str(time_val),
+            int(days)
         )
 
         return parsed
@@ -710,221 +736,194 @@ Latest User Input: {user_input}
 
 
 #no api based description generation
-@app.post("/api/detective/finalize")
-def finalize_description(data: FinalizeRequest):
-    try:
-        history = data.history
-
-        if not history:
-            return {"final_description": "No conversation data provided."}
-
-        # Collect only USER messages
-        user_text = ""
-        for h in history:
-            if h.get("role") == "user":
-                user_text += h.get("content", "") + " "
-
-        user_text = user_text.strip()
-
-        # -----------------------------
-        # CATEGORY EXTRACTION
-        # First noun-like word after "a" or "an"
-        # -----------------------------
-        category_match = re.search(r"\b(a|an)\s+([a-zA-Z\s]+?)(?:\.|,|\s)", user_text.lower())
-        category = None
-        if category_match:
-            category = category_match.group(2).split()[0].capitalize()
-
-        # Fallback: first meaningful word
-        if not category:
-            words = user_text.split()
-            if words:
-                category = words[0].capitalize()
-
-        # -----------------------------
-        # COLOR DETECTION
-        # -----------------------------
-        common_colors = [
-            "black", "white", "blue", "red", "green",
-            "yellow", "pink", "purple", "brown",
-            "gold", "rose gold", "silver", "grey"
-        ]
-
-        color_found = []
-        for color in common_colors:
-            if color in user_text.lower():
-                color_found.append(color.title())
-
-        # -----------------------------
-        # MATERIAL DETECTION
-        # -----------------------------
-        materials = [
-            "leather", "metal", "plastic", "gold",
-            "silver", "cotton", "denim", "wood",
-            "glass", "crystal", "rubber"
-        ]
-
-        material_found = []
-        for material in materials:
-            if material in user_text.lower():
-                material_found.append(material.title())
-
-        # -----------------------------
-        # SIZE / SHAPE
-        # -----------------------------
-        size_words = ["small", "large", "big", "tiny", "mini", "dainty"]
-        size_found = []
-        for word in size_words:
-            if word in user_text.lower():
-                size_found.append(word.capitalize())
-
-        # -----------------------------
-        # LOCATION EXTRACTION
-        # -----------------------------
-        location = None
-        location_match = re.search(
-            r"(last saw it|last seen|lost it|left it)\s+(in|at)\s+([a-zA-Z0-9\s]+)",
-            user_text.lower()
-        )
-        if location_match:
-            location = location_match.group(3).strip().capitalize()
-
-        # -----------------------------
-        # BUILD FINAL DESCRIPTION
-        # -----------------------------
-        description_parts = []
-
-        if category:
-            description_parts.append(f"Category: {category}.")
-
-        if color_found:
-            description_parts.append(f"Color: {', '.join(color_found)}.")
-
-        if material_found:
-            description_parts.append(f"Material: {', '.join(material_found)}.")
-
-        if size_found:
-            description_parts.append(f"Size/Appearance: {', '.join(size_found)}.")
-
-        if location:
-            description_parts.append(f"Last seen at: {location}.")
-
-        final_description = " ".join(description_parts)
-
-        if not final_description:
-            final_description = "Insufficient details provided to generate description."
-
-        # Final Probability Calculation
-        rec_prob = calculate_recovery_probability(
-            category or "Unknown",
-            color_found[0] if color_found else "Unknown",
-            location or "Unknown",
-            "12:00", # default time if not extracted
-            0 # default days if not extracted
-        )
-
-        return {
-            "final_description": final_description,
-            "recovery_probability": rec_prob
-        }
-
-    except Exception as e:
-        print("Finalize Endpoint Error:", str(e))
-        return {"final_description": "Something went wrong."}
 # @app.post("/api/detective/finalize")
 # def finalize_description(data: FinalizeRequest):
 #     try:
 #         history = data.history
 
 #         if not history:
-#             print("Finalize Debug: No history received.")
 #             return {"final_description": "No conversation data provided."}
 
-#         # ===== SYSTEM PROMPT =====
-#         system_prompt = """
-# You are generating a final structured item description.
-
-# Based ONLY on information mentioned in the conversation,
-# write a detailed physical description of the lost item.
-
-# Include:
-# - Category
-# - Color
-# - Material (if mentioned)
-# - Shape (if mentioned)
-# - Distinctive features (if mentioned)
-
-# Do NOT ask questions.
-# Do NOT invent details.
-# Return only the description paragraph.
-# """
-
-#         # ===== Convert Entire Conversation To ONE User Message =====
-#         conversation_text = ""
-
+#         # Collect only USER messages
+#         user_text = ""
 #         for h in history:
-#             role = h.get("role", "")
-#             content = h.get("content", "")
+#             if h.get("role") == "user":
+#                 user_text += h.get("content", "") + " "
 
-#             print(f"History -> Role: {role}, Content: {content}")
+#         user_text = user_text.strip()
 
-#             conversation_text += f"{role.upper()}: {content}\n"
+#         # -----------------------------
+#         # CATEGORY EXTRACTION
+#         # First noun-like word after "a" or "an"
+#         # -----------------------------
+#         category_match = re.search(r"\b(a|an)\s+([a-zA-Z\s]+?)(?:\.|,|\s)", user_text.lower())
+#         category = None
+#         if category_match:
+#             category = category_match.group(2).split()[0].capitalize()
 
-#         messages = [
-#             {"role": "system", "content": system_prompt},
-#             {
-#                 "role": "user",
-#                 "content": f"Here is the conversation:\n\n{conversation_text}\n\nGenerate the final structured description."
-#             }
+#         # Fallback: first meaningful word
+#         if not category:
+#             words = user_text.split()
+#             if words:
+#                 category = words[0].capitalize()
+
+#         # -----------------------------
+#         # COLOR DETECTION
+#         # -----------------------------
+#         common_colors = [
+#             "black", "white", "blue", "red", "green",
+#             "yellow", "pink", "purple", "brown",
+#             "gold", "rose gold", "silver", "grey"
 #         ]
 
-#         print("Messages Sent To OpenRouter:")
-#         print(messages)
+#         color_found = []
+#         for color in common_colors:
+#             if color in user_text.lower():
+#                 color_found.append(color.title())
 
-#         # ===== API CALL =====
-#         response = requests.post(
-#             "https://openrouter.ai/api/v1/chat/completions",
-#             headers={
-#                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-#                 "Content-Type": "application/json"
-#             },
-#             json={
-#                 "model": "google/gemma-3-12b-it:free",
-#                 "messages": messages,
-#                 "temperature": 0.5,
-#                 "max_tokens": 200
-#             },
-#             timeout=30
+#         # -----------------------------
+#         # MATERIAL DETECTION
+#         # -----------------------------
+#         materials = [
+#             "leather", "metal", "plastic", "gold",
+#             "silver", "cotton", "denim", "wood",
+#             "glass", "crystal", "rubber"
+#         ]
+
+#         material_found = []
+#         for material in materials:
+#             if material in user_text.lower():
+#                 material_found.append(material.title())
+
+#         # -----------------------------
+#         # SIZE / SHAPE
+#         # -----------------------------
+#         size_words = ["small", "large", "big", "tiny", "mini", "dainty"]
+#         size_found = []
+#         for word in size_words:
+#             if word in user_text.lower():
+#                 size_found.append(word.capitalize())
+
+#         # -----------------------------
+#         # LOCATION EXTRACTION
+#         # -----------------------------
+#         location = None
+#         location_match = re.search(
+#             r"(last saw it|last seen|lost it|left it)\s+(in|at)\s+([a-zA-Z0-9\s]+)",
+#             user_text.lower()
+#         )
+#         if location_match:
+#             location = location_match.group(3).strip().capitalize()
+
+#         # -----------------------------
+#         # BUILD FINAL DESCRIPTION
+#         # -----------------------------
+#         description_parts = []
+
+#         if category:
+#             description_parts.append(f"Category: {category}.")
+
+#         if color_found:
+#             description_parts.append(f"Color: {', '.join(color_found)}.")
+
+#         if material_found:
+#             description_parts.append(f"Material: {', '.join(material_found)}.")
+
+#         if size_found:
+#             description_parts.append(f"Size/Appearance: {', '.join(size_found)}.")
+
+#         if location:
+#             description_parts.append(f"Last seen at: {location}.")
+
+#         final_description = " ".join(description_parts)
+
+#         if not final_description:
+#             final_description = "Insufficient details provided to generate description."
+
+#         # Final Probability Calculation
+#         rec_prob = calculate_recovery_probability(
+#             category or "Unknown",
+#             color_found[0] if color_found else "Unknown",
+#             location or "Unknown",
+#             "12:00", # default time if not extracted
+#             0 # default days if not extracted
 #         )
 
-#         print("OpenRouter Status Code:", response.status_code)
-
-#         if response.status_code != 200:
-#             print("OpenRouter HTTP Error:", response.text)
-#             return {"final_description": "AI service error. Try again."}
-
-#         result = response.json()
-#         print("OpenRouter Raw Response:", result)
-
-#         if "choices" not in result or not result["choices"]:
-#             print("Invalid OpenRouter response structure.")
-#             return {"final_description": "AI temporarily unavailable."}
-
-#         final_text = result["choices"][0]["message"]["content"]
-
-#         if final_text:
-#             final_text = final_text.strip()
-
-#         if not final_text:
-#             print("Model returned empty content.")
-#             final_text = "Description could not be generated. Please try again."
-
-#         print("Final Description Generated:", final_text)
-
-#         return {"final_description": final_text}
+#         return {
+#             "final_description": final_description,
+#             "recovery_probability": rec_prob
+#         }
 
 #     except Exception as e:
 #         print("Finalize Endpoint Error:", str(e))
 #         return {"final_description": "Something went wrong."}
 
+@app.post("/api/detective/finalize")
+def finalize_description(data: FinalizeRequest):
+    try:
+        history = data.history
 
+        if not history:
+            print("Finalize Debug: No history received.")
+            return {"final_description": "No conversation data provided."}
+
+        # ===== SYSTEM PROMPT =====
+        system_prompt = """
+You are generating a final structured item description to generate image.
+
+Based ONLY on information mentioned in the conversation,
+write a detailed physical description of the lost item.
+
+Include:
+- Category
+- Color
+- Material (if mentioned)
+- Shape (if mentioned)
+- Distinctive features (if mentioned)
+
+Do NOT ask questions.
+Do NOT invent details.
+Return only the description paragraph.
+"""
+
+        # ===== Convert Conversation =====
+        conversation_text = ""
+
+        for h in history:
+            role = h.get("role", "")
+            content = h.get("content", "")
+
+            print(f"History -> Role: {role}, Content: {content}")
+            conversation_text += f"{role.upper()}: {content}\n"
+
+        prompt = f"""
+{system_prompt}
+
+Here is the conversation:
+
+{conversation_text}
+
+Generate the final structured description.
+"""
+
+        print("Prompt sent to Gemini:")
+        print(prompt)
+
+        # ===== GEMINI MODEL =====
+        model = genai.GenerativeModel("gemini-2.5-flash")
+
+        response = model.generate_content(prompt)
+
+        final_text = response.text.strip() if response.text else ""
+
+        if not final_text:
+            print("Gemini returned empty content.")
+            final_text = "Description could not be generated. Please try again."
+
+        print("Final Description Generated:", final_text)
+
+        return {"final_description": final_text}
+
+    except Exception as e:
+        print("Finalize Endpoint Error:", str(e))
+        return {"final_description": "Something went wrong."}

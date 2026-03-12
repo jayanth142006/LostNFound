@@ -19,6 +19,8 @@ export const Landing: React.FC<LandingProps> = ({ setAppState }) => {
       try {
         const res = await fetch(`${baseUrl}/found-items`);
         const data = await res.json();
+        console.log("FOUND ITEMS:", data);
+
         setFoundItems(data);
       } catch (err) {
         console.error("Failed to fetch found items:", err);
